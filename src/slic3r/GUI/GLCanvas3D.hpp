@@ -393,6 +393,7 @@ class GLCanvas3D
         FilamentUnPrintableOnFirstLayer,
         MixUsePLAAndPETG,
         PrimeTowerOutside,
+        PrimeTowerCollision,
         NozzleFilamentIncompatible,
         MixtureFilamentIncompatible,
         FlushingVolumeZero
@@ -554,6 +555,7 @@ private:
     bool m_use_clipping_planes;
     std::array<SlaCap, 2> m_sla_caps;
     std::string m_sidebar_field;
+    std::string m_prime_tower_collision_text;
     // when true renders an extra frame by not resetting m_dirty to false
     // see request_extra_frame()
     bool m_extra_frame_requested;
@@ -667,6 +669,7 @@ public:
         GLModel m_perimeter;
         bool m_render_fill{ true };
         bool m_visible{ false };
+        bool m_is_collision{ false };
 
         std::vector<Pointf3s> m_hull_2d_cache;
 
@@ -675,6 +678,7 @@ public:
         void set_polygons(const Polygons& polygons, const std::vector<std::pair<Polygon, float>>& height_polygons);
         void set_render_fill(bool render_fill) { m_render_fill = render_fill; }
         void set_visible(bool visible) { m_visible = visible; }
+        void set_collision(bool is_collision) { m_is_collision = is_collision; }
         void render();
 
         friend class GLCanvas3D;
@@ -1164,6 +1168,10 @@ public:
 
     void set_sequential_print_clearance_render_fill(bool render_fill) {
         m_sequential_print_clearance.set_render_fill(render_fill);
+    }
+
+    void set_sequential_print_clearance_collision(bool is_collision) {
+        m_sequential_print_clearance.set_collision(is_collision);
     }
 
     //BBS: add the height logic

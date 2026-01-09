@@ -954,6 +954,9 @@ void GLCanvas3D::Tooltip::render(const Vec2d& mouse_position, GLCanvas3D& canvas
 //BBS: add height limit logic
 void GLCanvas3D::SequentialPrintClearance::set_polygons(const Polygons& polygons, const std::vector<std::pair<Polygon, float>>& height_polygons)
 {
+    const ColorRGBA FILL_COLOR = { 0.8f, 0.8f, 1.0f, 0.5f };
+    const ColorRGBA COLLISION_COLOR = { 1.0f, 0.0f, 0.0f, 0.5f };
+
     //BBS: add height limit logic
     m_height_limit.reset();
     m_perimeter.reset();
@@ -962,7 +965,9 @@ void GLCanvas3D::SequentialPrintClearance::set_polygons(const Polygons& polygons
         if (m_render_fill) {
             GLModel::Geometry fill_data;
             fill_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3 };
-            fill_data.color  = { 0.8f, 0.8f, 1.0f, 0.5f };
+            // ORCA: Change color on collision
+            fill_data.color  = m_is_collision ? COLLISION_COLOR : FILL_COLOR;
+            // fill_data.color  = { 0.8f, 0.8f, 1.0f, 0.5f };
 
             // vertices + indices
             const ExPolygons polygons_union = union_ex(polygons);
@@ -989,7 +994,9 @@ void GLCanvas3D::SequentialPrintClearance::set_polygons(const Polygons& polygons
     if (!height_polygons.empty()) {
         GLModel::Geometry height_fill_data;
         height_fill_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3 };
-        height_fill_data.color  = {0.8f, 0.8f, 1.0f, 0.5f};
+        // ORCA: Change color on collision
+        height_fill_data.color  = m_is_collision ? COLLISION_COLOR : FILL_COLOR;
+        // height_fill_data.color  = {0.8f, 0.8f, 1.0f, 0.5f};
 
         // vertices + indices
         unsigned int vertices_counter = 0;
@@ -1013,6 +1020,8 @@ void GLCanvas3D::SequentialPrintClearance::render()
 {
     const ColorRGBA FILL_COLOR = { 0.7f, 0.7f, 1.0f, 0.5f };
     const ColorRGBA NO_FILL_COLOR = { 0.75f, 0.75f, 0.75f, 0.75f };
+    // ORCA: Added collision color
+    const ColorRGBA COLLISION_COLOR = { 1.0f, 0.0f, 0.0f, 0.5f };
 
     GLShaderProgram* shader = wxGetApp().get_shader("flat");
     if (shader == nullptr)
@@ -1029,11 +1038,17 @@ void GLCanvas3D::SequentialPrintClearance::render()
     glsafe(::glEnable(GL_BLEND));
     glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
 
-    m_perimeter.set_color(m_render_fill ? FILL_COLOR : NO_FILL_COLOR);
+    // ORCA: Set color based on collision status
+    ColorRGBA color = m_is_collision ? COLLISION_COLOR : (m_render_fill ? FILL_COLOR : NO_FILL_COLOR);
+
+    m_perimeter.set_color(color);
+    // m_perimeter.set_color(m_render_fill ? FILL_COLOR : NO_FILL_COLOR);
+
     m_perimeter.render();
     m_fill.render();
     //BBS: add height limit
-    m_height_limit.set_color(m_render_fill ? FILL_COLOR : NO_FILL_COLOR);
+    m_height_limit.set_color(color);
+    // m_height_limit.set_color(m_render_fill ? FILL_COLOR : NO_FILL_COLOR);
     m_height_limit.render();
 
     glsafe(::glDisable(GL_BLEND));
@@ -4364,8 +4379,11 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         // Not only detection of some modifiers !!!
         if (evt.Dragging()) {
             GLGizmosManager::EType c = m_gizmos.get_current_type();
+            // ORCA: Allow sequential clearance update for Wipe Tower No Sparse Layers
             if (current_printer_technology() == ptFFF &&
-                (fff_print()->config().print_sequence == PrintSequence::ByObject)) {
+                ((fff_print()->config().print_sequence == PrintSequence::ByObject) || 
+                 (fff_print()->config().enable_prime_tower && fff_print()->config().wipe_tower_no_sparse_layers))) {
+                // (fff_print()->config().print_sequence == PrintSequence::ByObject)) {
                 if (can_sequential_clearance_show_in_gizmo())
                     update_sequential_clearance();
             } else {
@@ -4573,7 +4591,11 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 TransformationType trafo_type;
                 trafo_type.set_relative();
                 m_selection.translate(cur_pos - m_mouse.drag.start_position_3D, trafo_type);
-                if (current_printer_technology() == ptFFF && (fff_print()->config().print_sequence == PrintSequence::ByObject))
+                // ORCA: Update sequential clearance for Wipe Tower No Sparse Layers
+                if (current_printer_technology() == ptFFF && 
+                    ((fff_print()->config().print_sequence == PrintSequence::ByObject) || 
+                     (fff_print()->config().enable_prime_tower && fff_print()->config().wipe_tower_no_sparse_layers)))
+                    // (fff_print()->config().print_sequence == PrintSequence::ByObject))
                     update_sequential_clearance();
                 // BBS
                 //wxGetApp().obj_manipul()->set_dirty();
@@ -5565,10 +5587,17 @@ bool GLCanvas3D::can_sequential_clearance_show_in_gizmo() {
 
 void GLCanvas3D::update_sequential_clearance()
 {
-    if (current_printer_technology() != ptFFF || (fff_print()->config().print_sequence == PrintSequence::ByLayer))
+    if (current_printer_technology() != ptFFF)
         return;
 
-    if (m_gizmos.is_dragging())
+    // BBS: Check if sequential print OR wipe tower no-sparse check is active
+    bool is_seq_print = fff_print()->config().print_sequence == PrintSequence::ByObject;
+    bool is_wt_no_sparse = fff_print()->config().enable_prime_tower && fff_print()->config().wipe_tower_no_sparse_layers;
+
+    // if (m_gizmos.is_dragging())
+    //     return;
+    // ORCA: Allow update during drag for live collision check
+    if (m_gizmos.is_dragging() && !is_wt_no_sparse)
         return;
 
     // collects instance transformations from volumes
@@ -5595,6 +5624,152 @@ void GLCanvas3D::update_sequential_clearance()
         auto& transform = instance_transforms[v->object_idx()][v->instance_idx()];
         if (!transform.has_value())
             transform = v->get_instance_transformation();
+    }
+
+    // Logic for Wipe Tower No Sparse Layers Visualization
+    if (!is_seq_print && is_wt_no_sparse) {
+        // Clear previous sequential print data
+        m_sequential_print_clearance.m_hull_2d_cache.clear();
+
+        // Find the Wipe Tower GLVolume
+        const GLVolume* wt_volume = nullptr;
+        for (const GLVolume* v : m_volumes.volumes) {
+            if (v->is_wipe_tower && v->is_active) {
+                wt_volume = v;
+                break;
+            }
+        }
+
+        if (!wt_volume)
+            return; // No wipe tower found in scene
+
+        // Get the hull/bounding box from the volume
+        BoundingBoxf3 wt_bb = wt_volume->transformed_bounding_box();
+        
+        double x_min = wt_bb.min.x();
+        double x_max = wt_bb.max.x();
+        double y_min = wt_bb.min.y();
+        double y_max = wt_bb.max.y();
+
+        // ORCA: If no sparse layers is enabled and we haven't sliced yet, 
+        // the volume is just a small dummy. We need to estimate its real potential size.
+        if (fff_print()->config().wipe_tower_no_sparse_layers && !fff_print()->is_step_done(psWipeTower)) {
+            double w = fff_print()->config().prime_tower_width;
+            double d = w; // Default
+
+            const std::vector<double>& matrix = fff_print()->config().flush_volumes_matrix.values;
+            double max_flush_vol = 0.0;
+            if (!matrix.empty()) {
+                max_flush_vol = *std::max_element(matrix.begin(), matrix.end());
+            }
+
+            double multiplier = 1.0;
+            if (!fff_print()->config().flush_multiplier.values.empty()) {
+                multiplier = fff_print()->config().flush_multiplier.values[0];
+            }
+            max_flush_vol *= multiplier;
+
+            double layer_height = 0.2; // Default fallback
+            if (!fff_print()->objects().empty()) {
+                layer_height = fff_print()->objects().front()->config().layer_height.value;
+            }
+
+            if (layer_height > EPSILON && w > EPSILON) {
+                double depth_per_flush = max_flush_vol / (layer_height * w);
+                size_t n_filaments = fff_print()->extruders().size();
+                double safety_factor = (n_filaments > 2) ? 2.5 : 1.2;
+                double estimated_max_depth = depth_per_flush * safety_factor + 2.0;
+
+                if (estimated_max_depth > d) {
+                    // Expand the bounding box in Y direction (wipe tower grows in Y)
+                    // The tower center is at (x_pos, y_pos), so we expand from the center
+                    double y_center = 0.5 * (y_min + y_max);
+                    y_min = y_center - 0.5 * estimated_max_depth;
+                    y_max = y_center + 0.5 * estimated_max_depth;
+                }
+            }
+        }
+
+        Point p1 = Point::new_scale(x_min, y_min);
+        Point p2 = Point::new_scale(x_max, y_min);
+        Point p3 = Point::new_scale(x_max, y_max);
+        Point p4 = Point::new_scale(x_min, y_max);
+        
+        Polygon wt_poly;
+        wt_poly.points = { p1, p2, p3, p4 };
+
+        // Rotation is already applied in transformed_bounding_box? 
+        // transformed_bounding_box returns an AABB (Axis Aligned Bounding Box) of the transformed object.
+        // If the wipe tower is rotated, the AABB will be larger.
+        // Ideally we want the exact rotated rectangle.
+        
+        // GLVolume stores the mesh. Or we can use the instance transformation.
+        // But the Wipe Tower usually isn't rotated by the user arbitrarily (only 0 or fixed angle in config).
+        // If it has rotation, the AABB might be slightly inaccurate (too big), which is safer for clearance.
+        
+        // Let's stick with AABB for now, it's robust and simple.
+        
+        auto [object_skirt_offset, _] = fff_print()->object_skirt_offset();
+        // Use full radius for safety visualization
+        float obj_distance = scale_(fff_print()->config().extruder_clearance_radius.value + object_skirt_offset - 0.1);
+
+        Polygons wt_polys = offset(wt_poly, obj_distance, jtRound, scale_(0.1));
+
+        // Check for actual collision to show red visual feedback
+        // ORCA: Changed to use live instance transforms for collision check
+        bool is_collision = false;
+        
+        for (size_t obj_idx = 0; obj_idx < instance_transforms.size(); ++obj_idx) {
+            const ModelObject* model_object = m_model->objects[obj_idx];
+            // Compute hull in object space (Identity transform)
+            Polygon hull_object_space = model_object->convex_hull_2d(Transform3d::Identity());
+
+            for (size_t inst_idx = 0; inst_idx < instance_transforms[obj_idx].size(); ++inst_idx) {
+                const auto& transform_opt = instance_transforms[obj_idx][inst_idx];
+                const ModelInstance* mi = model_object->instances[inst_idx];
+                
+                if (!mi->is_printable()) continue;
+
+                Geometry::Transformation transformation;
+                if (transform_opt.has_value()) {
+                    transformation = transform_opt.value();
+                } else {
+                    // Fallback to model instance
+                    const Vec3d& offset = mi->get_offset();
+                    transformation.set_offset({ offset.x(), offset.y(), 0.0 });
+                    transformation.set_rotation(Z, mi->get_rotation().z());
+                    transformation.set_scaling_factor(mi->get_scaling_factor());
+                    transformation.set_mirror(mi->get_mirror());
+                }
+
+                Transform3d matrix = transformation.get_matrix();
+                Polygon hull_transformed = hull_object_space;
+                for (Point& p : hull_transformed.points) {
+                    //ORCA: Fix compilation error by specifying template argument for unscale
+                    //Vec3d p3(unscale(p.x()), unscale(p.y()), 0.0);
+                    Vec3d p3(unscale<double>(p.x()), unscale<double>(p.y()), 0.0);
+                    p3 = matrix * p3;
+                    p = Point(scale_(p3.x()), scale_(p3.y()));
+                }
+
+                if (!intersection(wt_polys, hull_transformed).empty()) {
+                    is_collision = true;
+                    // ORCA: Set collision text
+                    m_prime_tower_collision_text = (boost::format(_u8L("Prime tower is too close to object %1%. When 'No sparse layers' is enabled, the prime tower must be at least %2% mm away from all objects to prevent collision."))
+                        % model_object->name
+                        % (fff_print()->config().extruder_clearance_radius.value + object_skirt_offset)).str();
+                    break;
+                }
+            }
+            if (is_collision) break;
+        }
+
+        set_sequential_print_clearance_visible(true);
+        set_sequential_print_clearance_render_fill(true);
+        set_sequential_print_clearance_collision(is_collision);
+        _set_warning_notification(EWarning::PrimeTowerCollision, is_collision);
+        set_sequential_print_clearance_polygons(wt_polys, {});
+        return;
     }
 
     // calculates objects 2d hulls (see also: Print::sequential_print_horizontal_clearance_valid())
@@ -10355,6 +10530,9 @@ void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
         break;
     case EWarning::PrimeTowerOutside:
         text  = _u8L("The prime tower extends beyond the plate boundary.");
+        break;
+    case EWarning::PrimeTowerCollision:
+        text  = m_prime_tower_collision_text;
         break;
     case EWarning::NozzleFilamentIncompatible: {
         text = _u8L(get_nozzle_filament_incompatible_text());

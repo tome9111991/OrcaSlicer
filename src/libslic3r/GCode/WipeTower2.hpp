@@ -8,6 +8,7 @@
 #include <sstream>
 #include <utility>
 #include <algorithm>
+#include <map>
 
 #include "libslic3r/Point.hpp"
 #include "libslic3r/Polygon.hpp"
@@ -67,6 +68,8 @@ public:
         const Vec2d max(double(m_wipe_tower_width) + brim, double(m_wipe_tower_depth) + brim + double(m_y_shift));
         return BoundingBoxf(min, max);
     }
+    // ORCA: Expose outer wall for collision detection
+    std::map<float, Polylines> get_outer_wall() const { return m_outer_wall; }
     // WT2 doesn't currently compute a rib-origin compensation like WipeTower (m_rib_offset),
     // so expose a zero offset for consistency purposes (to maintain API parity).
     Vec2f get_rib_offset() const { return Vec2f::Zero(); }
@@ -353,6 +356,9 @@ private:
 		float spacing);
 
     Polygon generate_rib_polygon(const WipeTower::box_coordinates& wt_box);
+
+private:
+    std::map<float, Polylines> m_outer_wall;
 };
 
 
