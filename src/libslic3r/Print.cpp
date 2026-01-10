@@ -588,164 +588,92 @@ std::vector<size_t> Print::layers_sorted_for_object(float start, float end, std:
     return idx_of_object_sorted;
 };
 
-// ORCA: New function to check Prime Tower collision with objects when 'no sparse layers' is enabled
-// Uses live object positions and config to allow real-time feedback in GUI
+// ORCA: New function to check Prime Tower collision with objects when 'no sparse layers' is enabled.
+// Uses accurate object hulls and handles multi-plate coordinate systems correctly by ensuring all polygons are in World space.
 StringObjectException Print::wipe_tower_clearance_valid(const Print& print, StringObjectException* warning)
 {
     if (!print.config().enable_prime_tower || !print.config().wipe_tower_no_sparse_layers)
         return {};
 
-    auto [object_skirt_offset, _] = print.object_skirt_offset();
-
-    // Using the same distance logic as sequential printing for consistency
-    // ORCA: Always enforce full clearance radius for wipe tower with no-sparse-layers to prevent collision with print head fan/shroud
-    float obj_distance = scale_(print.config().extruder_clearance_radius.value + object_skirt_offset - 0.1);
-
-    Polygons wt_polys_to_check;
-
     size_t plate_idx = print.get_plate_index();
-    Vec3d  origin    = print.get_plate_origin();
-    double x_pos     = print.config().wipe_tower_x.get_at(plate_idx) + origin.x();
-    double y_pos     = print.config().wipe_tower_y.get_at(plate_idx) + origin.y();
+    const PrintConfig& config = print.config();
+    const Vec3d origin = print.get_plate_origin();
 
-    // Case 1: Slicing is done or outer_wall is already populated (use real geometry including brim and all layers)
-    // ORCA: Force usage of Bounding Box (Case 2) logic to ensure consistency with Plater position and avoid coordinate system confusion.
-    if (false && !print.m_fake_wipe_tower.outer_wall.empty()) {
-        for (auto const& it : print.m_fake_wipe_tower.outer_wall) {
-            for (auto const& pl : it.second) {
-                Polygon poly;
-                poly.points = pl.points;
-                if (poly.is_valid()) {
-                    // m_outer_wall is already in world coordinates (rotated and translated),
-                    // so we just use it directly.
+    // Absolute World position of WT center
+    double x_pos = config.wipe_tower_x.get_at(plate_idx) + origin.x();
+    double y_pos = config.wipe_tower_y.get_at(plate_idx) + origin.y();
 
-                    // Apply clearance radius
-                    Polygons offsetted = offset(poly, obj_distance, jtRound, scale_(0.1));
-                    wt_polys_to_check.insert(wt_polys_to_check.end(), offsetted.begin(), offsetted.end());
-                }
-            }
-        }
-        // Use union to simplify the polygons we check against objects
-        wt_polys_to_check = union_(wt_polys_to_check);
-    } 
-        // Case 2: Use estimated bounding box (pre-slicing or fallback)
-        else {
-            double w = print.config().prime_tower_width;
-            double d = w; // Default estimate (square)
+    double radius = config.extruder_clearance_radius.value;
+    // Fallback if < 15.0mm (likely unset, invalid, or just nozzle radius instead of head radius)
+    if (radius < 15.0) {
+        radius = 45.0; // Default safe radius
+    }
+
+    // Accurate geometry if available
+    Polygon wt_hull;
+    Polygons all_wt_polys;
     
-            // If depth is already calculated but outer_wall is missing
-            if (print.m_fake_wipe_tower.depth > EPSILON) {
-                d = print.m_fake_wipe_tower.depth;
-            } else if (print.config().wipe_tower_no_sparse_layers) {
-                // ORCA: Estimate max depth for no sparse layers based on flushing volumes
-                const std::vector<double>& matrix = print.config().flush_volumes_matrix.values;
-                double max_flush_vol = 0.0;
-                if (!matrix.empty()) {
-                    max_flush_vol = *std::max_element(matrix.begin(), matrix.end());
-                }
-
-                // Apply flush multiplier
-                double multiplier = 1.0;
-                if (!print.config().flush_multiplier.values.empty()) {
-                    multiplier = print.config().flush_multiplier.values[0];
-                }
-                max_flush_vol *= multiplier;
-
-                double layer_height = 0.2; // Default fallback
-                if (!print.objects().empty()) {
-                    layer_height = print.objects().front()->config().layer_height.value;
-                }
-
-                if (layer_height > EPSILON && w > EPSILON) {
-                    // Calculate depth for one max flush
-                    double depth_per_flush = max_flush_vol / (layer_height * w);
-
-                    // Heuristic: Assume a safety factor for multiple toolchanges per layer
-                    size_t n_filaments = print.extruders().size();
-                    double safety_factor = (n_filaments > 2) ? 2.5 : 1.2;
-
-                    double estimated_max_depth = depth_per_flush * safety_factor;
-
-                    // Add margin
-                    estimated_max_depth += 2.0; 
-
-                    if (estimated_max_depth > d) d = estimated_max_depth;
-                }
-            }
-    
-            // BBS: Wipe tower position is the center. 
-            // We need to create a polygon centered at (0,0) so rotation and translation work correctly.
-            double brim_width = print.config().prime_tower_brim_width.value;
-            double h_w = 0.5 * w + brim_width;
-            double h_d = 0.5 * d + brim_width;
-    
-            Point p1 = Point::new_scale(-h_w, -h_d);
-            Point p2 = Point::new_scale(h_w, -h_d);
-            Point p3 = Point::new_scale(h_w, h_d);
-            Point p4 = Point::new_scale(-h_w, h_d);
-            
-            Polygon wipe_tower_poly;
-            wipe_tower_poly.points = { p1, p2, p3, p4 };
-    
-            if (std::abs(print.config().wipe_tower_rotation_angle.value) > EPSILON)
-                wipe_tower_poly.rotate(Geometry::deg2rad(print.config().wipe_tower_rotation_angle.value));
-    
-            wipe_tower_poly.translate(Point::new_scale(x_pos, y_pos));
-    
-            // Inflate wipe tower polygon by clearance
-            wt_polys_to_check = offset(wipe_tower_poly, obj_distance, jtRound, scale_(0.1));
-        }
-    if (wt_polys_to_check.empty()) return {};
-
-    // Check intersection with all objects
-    std::map<ObjectID, Polygon> map_model_object_to_convex_hull;
-
-    for (const PrintObject* print_object : print.objects()) {
-        ObjectID model_object_id = print_object->model_object()->id();
-        auto it_convex_hull = map_model_object_to_convex_hull.find(model_object_id);
-
-        // Cache convex hull calculation
-        ModelInstance* model_instance0 = print_object->model_object()->instances.front();
-        if (it_convex_hull == map_model_object_to_convex_hull.end()) {
-            it_convex_hull = map_model_object_to_convex_hull.emplace_hint(it_convex_hull, model_object_id,
-                print_object->model_object()->convex_hull_2d(Geometry::assemble_transform(
-                    { 0.0, 0.0, model_instance0->get_offset().z() }, model_instance0->get_rotation(), model_instance0->get_scaling_factor(), model_instance0->get_mirror())));
-        }
-
-        Polygon convex_hull0 = it_convex_hull->second;
-
-        // Iterate instances
-        // ORCA: Changed to iterate over ModelInstances directly to support live update during dragging
-        for (const ModelInstance* mi : print_object->model_object()->instances) {
-            if (!mi->is_printable()) continue;
-
-            Polygon convex_hull = convex_hull0;
-
-            // Handle rotation diff if any
-            const double z_diff = Geometry::rotation_diff_z(model_instance0->get_rotation(), mi->get_rotation());
-            if (std::abs(z_diff) > EPSILON)
-                convex_hull.rotate(z_diff);
-
-            // ORCA: Use live position
-            convex_hull.translate(Point::new_scale(mi->get_offset().x(), mi->get_offset().y()));
-            
-            // convex_hull.translate(instance.shift - print_object->center_offset());
-
-            if (!intersection(wt_polys_to_check, convex_hull).empty()) {
-                StringObjectException err;
-                err.string = (boost::format(L("Prime tower is too close to object %1%. When 'No sparse layers' is enabled, the prime tower must be at least %2% mm away from all objects to prevent collision."))
-                    // ORCA: Use mi instead of instance
-                    % mi->get_object()->name
-                    % (print.config().extruder_clearance_radius.value + object_skirt_offset)).str();
-                // ORCA: Use mi instead of instance
-                err.object = mi->get_object();
-                err.is_warning = true;
-                return err;
+    // ORCA: Collect outer walls from ALL layers because 'no sparse layers' might mean the tower 
+    // doesn't exist on layer 0 or varies significantly in shape/position.
+    if (!print.m_fake_wipe_tower.outer_wall.empty()) {
+        for (const auto& [z, polylines] : print.m_fake_wipe_tower.outer_wall) {
+            for (const Polyline& pl : polylines) {
+                if (pl.empty()) continue;
+                Polygon p;
+                p.points = pl.points;
+                all_wt_polys.push_back(p);
             }
         }
     }
 
-    return {};
+    bool is_fallback = false;
+    if (!all_wt_polys.empty()) {
+        // Compute convex hull of the entire tower projection
+        wt_hull = Slic3r::Geometry::convex_hull(all_wt_polys);
+        // Translate from local tower coordinates (usually around 0,0) to World position
+        wt_hull.translate(Point::new_scale(x_pos, y_pos));
+    } else {
+        is_fallback = true;
+        // Fallback estimate
+        double w = config.prime_tower_width.value;
+        double d = w;
+        if (print.m_fake_wipe_tower.depth > EPSILON) d = print.m_fake_wipe_tower.depth;
+        
+        double h_w = 0.5 * w + config.prime_tower_brim_width.value;
+        double h_d = 0.5 * d + config.prime_tower_brim_width.value;
+        
+        wt_hull.points = {
+            Point::new_scale(-h_w, -h_d), Point::new_scale(h_w, -h_d),
+            Point::new_scale(h_w, h_d),   Point::new_scale(-h_w, h_d)
+        };
+        if (std::abs(config.wipe_tower_rotation_angle.value) > EPSILON)
+            wt_hull.rotate(Geometry::deg2rad(config.wipe_tower_rotation_angle.value));
+        wt_hull.translate(Point::new_scale(x_pos, y_pos));
+    }
+
+    Polygons wt_hulls_offset = offset(wt_hull, float(scale_(radius)), jtRound, scale_(0.1));
+
+    StringObjectException result;
+
+    for (const PrintObject* print_object : print.objects()) {
+        for (const PrintInstance& instance : print_object->instances()) {
+            // Get accurate hull from instance matrix (bed-local) and translate to World (absolute)
+            // Use const_cast because get_convex_hull_2d is not marked const even though it doesn't modify state.
+            Polygon convex_hull = const_cast<PrintInstance&>(instance).get_convex_hull_2d();
+            convex_hull.translate(scale_(origin.x()), scale_(origin.y()));
+
+            if (!intersection(wt_hulls_offset, {convex_hull}).empty()) {
+                result.object = instance.model_instance->get_object();
+                result.string = Slic3r::format(L("Prime tower is too close to object %1%. When 'No sparse layers' is enabled, the prime tower must be at least %2% mm away from all objects to prevent collision."), 
+                    instance.model_instance->get_object()->name, radius);
+                result.is_warning = true;
+                break;
+            }
+        }
+        if (!result.string.empty()) break;
+    }
+
+    return result;
 }
 
 StringObjectException Print::sequential_print_clearance_valid(const Print &print, Polygons *polygons, std::vector<std::pair<Polygon, float>>* height_polygons)
@@ -2568,10 +2496,17 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             m_conflict_result = conflictRes;
             BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2%")%conflictRes.value()._objName1 %conflictRes.value()._objName2;
         } else {
-             // ORCA: Clear conflict result if no physical collision found, unless it's our custom Prime Tower warning.
-            if (m_conflict_result.has_value() && m_conflict_result.value()._objName1 != "Prime Tower") {
-                m_conflict_result = std::nullopt;
-            }
+             // ORCA: Clear conflict result if no physical collision found.
+             if (m_conflict_result.has_value()) {
+                 if (m_conflict_result.value()._objName1 == "Prime Tower") {
+                     // Clear if feature is disabled (stale warning)
+                     if (!m_config.enable_prime_tower || !m_config.wipe_tower_no_sparse_layers) {
+                         m_conflict_result = std::nullopt;
+                     }
+                 } else {
+                     m_conflict_result = std::nullopt;
+                 }
+             }
         }
     }
 
