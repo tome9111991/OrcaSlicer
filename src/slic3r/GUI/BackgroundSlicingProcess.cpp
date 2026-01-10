@@ -44,10 +44,6 @@ bool SlicingProcessCompletedEvent::critical_error() const
 	try {
 		this->rethrow_exception();
 	} catch (const Slic3r::SlicingError &ex) {
-		// ORCA: Prime tower collision should be treated as a critical error to show a popup
-		std::string msg = ex.what();
-		if (msg.find("collision") != std::string::npos || msg.find("Collision") != std::string::npos)
-			return true;
 		// Exception derived from SlicingError is non-critical.
 		return false;
     } catch (const Slic3r::SlicingErrors &) {

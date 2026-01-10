@@ -609,28 +609,15 @@ StringObjectException Print::wipe_tower_clearance_valid(const Print& print, Stri
     double y_pos     = print.config().wipe_tower_y.get_at(plate_idx) + origin.y();
 
     // Case 1: Slicing is done or outer_wall is already populated (use real geometry including brim and all layers)
-    if (!print.m_fake_wipe_tower.outer_wall.empty()) {
-        double angle = Geometry::deg2rad(print.config().wipe_tower_rotation_angle.value);
-        double w = print.config().prime_tower_width;
-        double d = print.m_fake_wipe_tower.depth;
-        if (d < EPSILON) d = w;
-        
-        Point center_offset = Point::new_scale(-0.5 * w, -0.5 * d);
-
+    // ORCA: Force usage of Bounding Box (Case 2) logic to ensure consistency with Plater position and avoid coordinate system confusion.
+    if (false && !print.m_fake_wipe_tower.outer_wall.empty()) {
         for (auto const& it : print.m_fake_wipe_tower.outer_wall) {
             for (auto const& pl : it.second) {
                 Polygon poly;
                 poly.points = pl.points;
                 if (poly.is_valid()) {
-                    // 0. Center it around (0,0)
-                    poly.translate(center_offset);
-
-                    // 1. Rotate around tower local origin (0,0)
-                    if (std::abs(angle) > EPSILON)
-                        poly.rotate(angle);
-                    
-                    // 2. Translate to world coordinates (tower pos + plate origin)
-                    poly.translate(Point::new_scale(x_pos, y_pos));
+                    // m_outer_wall is already in world coordinates (rotated and translated),
+                    // so we just use it directly.
 
                     // Apply clearance radius
                     Polygons offsetted = offset(poly, obj_distance, jtRound, scale_(0.1));
@@ -1394,18 +1381,7 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         }
     }
 
-    if (m_config.enable_prime_tower) {
-        // ORCA: Check for prime tower collision (no sparse layers)
-        auto ret = wipe_tower_clearance_valid(*this);
-        if (!ret.string.empty()) {
-            ret.type = STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT;
-            if (ret.is_warning && warning != nullptr) {
-                *warning = ret;
-            } else {
-                return ret;
-            }
-        }
-    } else {
+    if (!m_config.enable_prime_tower) {
         if (m_config.enable_wrapping_detection && warning!=nullptr) {
             StringObjectException warningtemp;
             warningtemp.string     = L("Prime tower is required for clumping detection; otherwise, there may be flaws on the model.");
@@ -2591,6 +2567,11 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         if (conflictRes.has_value()) {
             m_conflict_result = conflictRes;
             BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2%")%conflictRes.value()._objName1 %conflictRes.value()._objName2;
+        } else {
+             // ORCA: Clear conflict result if no physical collision found, unless it's our custom Prime Tower warning.
+            if (m_conflict_result.has_value() && m_conflict_result.value()._objName1 != "Prime Tower") {
+                m_conflict_result = std::nullopt;
+            }
         }
     }
 
@@ -3557,7 +3538,7 @@ void Print::_make_wipe_tower()
         auto ret = wipe_tower_clearance_valid(*this);
         if (!ret.string.empty()) {
             BOOST_LOG_TRIVIAL(warning) << "Wipe tower collision detected: " << ret.string;
-            
+
             std::string objName = "Object";
             const PrintObject* target_po = nullptr;
 
@@ -3584,14 +3565,11 @@ void Print::_make_wipe_tower()
                 nullptr, 
                 target_po
             );
-
-            // 2. Force a critical warning notification immediately
-            // Use ID -101 (CLI_GCODE_PATH_CONFLICTS) to trigger standard conflict handlers
-            active_step_add_warning(
-                PrintStateBase::WarningLevel::CRITICAL,
-                "PRIME TOWER COLLISION: " + ret.string,
-                (PrintStateBase::SlicingNotificationType)-101
-            );
+        } else {
+             // ORCA: Clear stale conflict if it was from Prime Tower clearance check
+             if (m_conflict_result.has_value() && m_conflict_result.value()._objName1 == "Prime Tower") {
+                 m_conflict_result = std::nullopt;
+             }
         }
     }
 }

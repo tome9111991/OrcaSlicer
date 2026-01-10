@@ -5767,7 +5767,6 @@ void GLCanvas3D::update_sequential_clearance()
         set_sequential_print_clearance_visible(true);
         set_sequential_print_clearance_render_fill(true);
         set_sequential_print_clearance_collision(is_collision);
-        _set_warning_notification(EWarning::PrimeTowerCollision, is_collision);
         set_sequential_print_clearance_polygons(wt_polys, {});
         return;
     }
