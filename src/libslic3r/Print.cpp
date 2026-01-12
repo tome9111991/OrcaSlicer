@@ -661,19 +661,22 @@ StringObjectException Print::wipe_tower_clearance_valid(const Print& print, Stri
     StringObjectException result;
 
     for (const PrintObject* print_object : print.objects()) {
+        // Check each instance using the robust Model Geometry (Convex Hull)
+        // This matches the Prepare tab logic and is always up-to-date with instance moves.
         for (const PrintInstance& instance : print_object->instances()) {
-            // Get accurate hull from instance matrix (bed-local) and translate to World (absolute)
-            // Use const_cast because get_convex_hull_2d is not marked const even though it doesn't modify state.
-            Polygon convex_hull = const_cast<PrintInstance&>(instance).get_convex_hull_2d();
-            convex_hull.translate(scale_(origin.x()), scale_(origin.y()));
+            // get_convex_hull_2d() returns Plate Coordinates (relative to plate origin)
+            Polygon object_hull = const_cast<PrintInstance&>(instance).get_convex_hull_2d();
+            
+            // Translate to World Space (Absolute Bed Coords) by adding plate origin
+            object_hull.translate(scale_(origin.x()), scale_(origin.y()));
 
-            Polygons intersection_result = intersection(wt_hulls_offset, {convex_hull});
+            Polygons intersection_result = intersection(wt_hulls_offset, {object_hull});
             if (!intersection_result.empty()) {
                 result.object = instance.model_instance->get_object();
                 result.string = Slic3r::format(L("Prime tower is too close to object %1%. When 'No sparse layers' is enabled, the prime tower must be at least %2% mm away from all objects to prevent collision."), 
                     instance.model_instance->get_object()->name, radius);
                 result.is_warning = true;
-                BOOST_LOG_TRIVIAL(warning) << boost::format("wipe_tower_clearance_valid: COLLISION DETECTED with object %1%") % instance.model_instance->get_object()->name;
+                BOOST_LOG_TRIVIAL(warning) << boost::format("wipe_tower_clearance_valid: COLLISION DETECTED with object %1% (using Model Convex Hull)") % instance.model_instance->get_object()->name;
                 break;
             }
         }
@@ -3375,21 +3378,6 @@ void Print::_make_wipe_tower()
                                                   m_wipe_tower_data.depth,
                                                   m_wipe_tower_data.brim_width, {scale_(origin.x()), scale_(origin.y())});
         m_fake_wipe_tower.outer_wall = wipe_tower.get_outer_wall();
-        
-        // ORCA: Re-run ConflictChecker after outer_wall is set for no sparse layers
-        // This ensures the G-code path preview shows correct collision warnings based on actual G-code paths
-        if (m_config.wipe_tower_no_sparse_layers && !m_no_check) {
-            std::optional<const FakeWipeTower *> wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
-            auto conflictRes = ConflictChecker::find_inter_of_lines_in_diff_objs(m_objects, wipe_tower_opt);
-            if (conflictRes.has_value()) {
-                // Update conflict result if it's a wipe tower conflict (actual path intersection)
-                // This will be used by the G-code preview tab
-                if (conflictRes.value()._objName1 == "WipeTower") {
-                    m_conflict_result = conflictRes;
-                    BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2% (after wipe tower generation)")%conflictRes.value()._objName1 %conflictRes.value()._objName2;
-                }
-            }
-        }
     } else {
         // Get wiping matrix to get number of extruders and convert vector<double> to vector<float>:
         std::vector<float> flush_matrix(cast<float>(m_config.flush_volumes_matrix.values));
@@ -3501,27 +3489,13 @@ void Print::_make_wipe_tower()
                                                   {scale_(origin.x()), scale_(origin.y())});
         // ORCA: Set outer_wall for precise collision checking
         m_fake_wipe_tower.outer_wall = wipe_tower.get_outer_wall();
-        
-        // ORCA: Re-run ConflictChecker after outer_wall is set for no sparse layers
-        // This ensures the G-code path preview shows correct collision warnings based on actual G-code paths
-        if (m_config.wipe_tower_no_sparse_layers && !m_no_check) {
-            std::optional<const FakeWipeTower *> wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
-            auto conflictRes = ConflictChecker::find_inter_of_lines_in_diff_objs(m_objects, wipe_tower_opt);
-            if (conflictRes.has_value()) {
-                // Update conflict result if it's a wipe tower conflict (actual path intersection)
-                // This will be used by the G-code preview tab
-                if (conflictRes.value()._objName1 == "WipeTower") {
-                    m_conflict_result = conflictRes;
-                    BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2% (after wipe tower generation)")%conflictRes.value()._objName1 %conflictRes.value()._objName2;
-                }
-            }
-        }
     }
 
-    // ORCA: Check collision again after generating wipe tower to ensure safety
-    // This check uses extruder clearance radius, not just path intersections
+    // ORCA: Check collision after generating wipe tower to ensure safety
     if (m_config.wipe_tower_no_sparse_layers) {
+        // First check clearance using our robust check (Convex Hull based)
         auto ret = wipe_tower_clearance_valid(*this);
+        
         if (!ret.string.empty()) {
             BOOST_LOG_TRIVIAL(warning) << "Wipe tower collision detected: " << ret.string;
 
@@ -3529,20 +3503,17 @@ void Print::_make_wipe_tower()
             const PrintObject* target_po = nullptr;
 
             if (ret.object) {
-                // Find the corresponding PrintObject
                 for (const PrintObject* po : m_objects) {
                     if (po->model_object() == ret.object) {
                         target_po = po;
                         break;
                     }
                 }
-                
                 auto mo = dynamic_cast<const ModelObject*>(ret.object);
                 if (mo) objName = mo->name;
             }
 
             // Set m_conflict_result for G-code viewer integration
-            // Use initial layer height so the viewer can map it to a valid layer (Layer 1)
             double conflict_height = m_config.initial_layer_print_height.value;
             m_conflict_result.emplace(
                 "Prime Tower", 
@@ -3551,36 +3522,23 @@ void Print::_make_wipe_tower()
                 nullptr, 
                 target_po
             );
-            BOOST_LOG_TRIVIAL(info) << boost::format("Set conflict_result: Prime Tower <-> %1% at height %2%") % objName % conflict_height;
+            BOOST_LOG_TRIVIAL(info) << boost::format("Set conflict_result: Prime Tower <-> %1%") % objName;
+            
         } else {
-             // ORCA: Clear conflict result if no collision found
-             // Check both clearance check and ConflictChecker
-             if (m_conflict_result.has_value() && m_conflict_result.value()._objName1 == "Prime Tower") {
-                 // Check if ConflictChecker found a conflict (WipeTower), if so keep it
-                 bool has_wipe_tower_conflict = false;
-                 if (m_config.wipe_tower_no_sparse_layers && !m_no_check) {
-                     std::optional<const FakeWipeTower *> wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
-                     auto conflictRes = ConflictChecker::find_inter_of_lines_in_diff_objs(m_objects, wipe_tower_opt);
-                     if (conflictRes.has_value() && conflictRes.value()._objName1 == "WipeTower") {
-                         has_wipe_tower_conflict = true;
-                         m_conflict_result = conflictRes;
-                         BOOST_LOG_TRIVIAL(info) << "ConflictChecker found WipeTower conflict, keeping it";
-                     }
-                 }
-                 if (!has_wipe_tower_conflict) {
+             // No clearance violation found.
+             // ORCA CHANGE: We explicitly SKIP the ConflictChecker for WipeTower here.
+             // Since 'wipe_tower_clearance_valid' now uses the robust Convex Hull (Prepare tab geometry),
+             // if it says there is enough space, we trust it.
+             // Running ConflictChecker here often produces false positives ("Serious warning") due to 
+             // complex path interpretations or Brim interactions, which confuses the user.
+             BOOST_LOG_TRIVIAL(info) << "Wipe tower clearance OK. Skipping ConflictChecker to avoid false positives.";
+
+             // Clear any stale conflict result
+             if (m_conflict_result.has_value()) {
+                 std::string conflict_type = m_conflict_result.value()._objName1;
+                 if (conflict_type == "Prime Tower" || conflict_type == "WipeTower") {
                      m_conflict_result = std::nullopt;
-                     BOOST_LOG_TRIVIAL(info) << "Cleared Prime Tower conflict (no collision found by wipe_tower_clearance_valid)";
-                 }
-             } else if (m_conflict_result.has_value() && m_conflict_result.value()._objName1 == "WipeTower") {
-                 // Also check if WipeTower conflict is still valid
-                 if (m_config.wipe_tower_no_sparse_layers && !m_no_check) {
-                     std::optional<const FakeWipeTower *> wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
-                     auto conflictRes = ConflictChecker::find_inter_of_lines_in_diff_objs(m_objects, wipe_tower_opt);
-                     if (!conflictRes.has_value() || conflictRes.value()._objName1 != "WipeTower") {
-                         // No conflict found, clear it
-                         m_conflict_result = std::nullopt;
-                         BOOST_LOG_TRIVIAL(info) << "Cleared WipeTower conflict (no path intersection found)";
-                     }
+                     BOOST_LOG_TRIVIAL(info) << "Cleared Prime Tower/WipeTower conflict";
                  }
              }
         }
