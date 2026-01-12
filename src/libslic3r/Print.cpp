@@ -2342,6 +2342,10 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 
     if (this->has_wipe_tower()) {
         m_fake_wipe_tower.set_pos({ m_config.wipe_tower_x.get_at(m_plate_index), m_config.wipe_tower_y.get_at(m_plate_index) });
+        // ORCA: Check wipe tower clearance. This ensures we catch collisions even if the wipe tower step was cached (e.g. only objects moved).
+        if (m_config.wipe_tower_no_sparse_layers) {
+            _update_wipe_tower_collision_result();
+        }
     }
 
     if (this->set_started(psSkirtBrim)) {
@@ -3492,6 +3496,13 @@ void Print::_make_wipe_tower()
     }
 
     // ORCA: Check collision after generating wipe tower to ensure safety
+    _update_wipe_tower_collision_result();
+}
+
+void Print::_update_wipe_tower_collision_result()
+{
+    // ORCA: Check collision again after generating wipe tower to ensure safety
+    // This check uses extruder clearance radius, not just path intersections
     if (m_config.wipe_tower_no_sparse_layers) {
         // First check clearance using our robust check (Convex Hull based)
         auto ret = wipe_tower_clearance_valid(*this);
@@ -3531,7 +3542,7 @@ void Print::_make_wipe_tower()
              // if it says there is enough space, we trust it.
              // Running ConflictChecker here often produces false positives ("Serious warning") due to 
              // complex path interpretations or Brim interactions, which confuses the user.
-             BOOST_LOG_TRIVIAL(info) << "Wipe tower clearance OK. Skipping ConflictChecker to avoid false positives.";
+             // BOOST_LOG_TRIVIAL(info) << "Wipe tower clearance OK. Skipping ConflictChecker to avoid false positives.";
 
              // Clear any stale conflict result
              if (m_conflict_result.has_value()) {
