@@ -10374,9 +10374,17 @@ void GLCanvas3D::_set_warning_notification(EWarning warning, bool state)
         std::string objName2 = m_gcode_viewer.m_conflict_result.value()._objName2;
         double      height   = m_gcode_viewer.m_conflict_result.value()._height;
         int         layer    = m_gcode_viewer.m_conflict_result.value().layer;
-        text = (boost::format(_u8L("Conflicts of G-code paths have been found at layer %d, Z = %.2lfmm. Please separate the conflicted objects farther (%s <-> %s).")) % layer %
+        double      radius   = m_gcode_viewer.m_conflict_result.value()._radius;
+        
+        // ORCA: Custom warning for Prime Tower no-sparse-layer clearance violation
+        if (objName1 == "Prime Tower") {
+             text = (boost::format(_u8L("Prime tower is too close to object %s. When 'No sparse layers' is enabled, the prime tower must be at least %.1fmm (Extruder clearance radius) away from all objects to prevent collision.")) % objName2 % radius).str();
+        } else {
+             text = (boost::format(_u8L("Conflicts of G-code paths have been found at layer %d, Z = %.2lfmm. Please separate the conflicted objects farther (%s <-> %s).")) % layer %
                 height % objName1 % objName2)
                    .str();
+        }
+
         prevConflictText        = text;
         const PrintObject *obj2 = reinterpret_cast<const PrintObject *>(m_gcode_viewer.m_conflict_result.value()._obj2);
         conflictObj             = obj2->model_object();

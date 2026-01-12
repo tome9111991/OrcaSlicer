@@ -3526,12 +3526,17 @@ void Print::_update_wipe_tower_collision_result()
 
             // Set m_conflict_result for G-code viewer integration
             double conflict_height = m_config.initial_layer_print_height.value;
+            // ORCA: Pass radius to show it in the UI warning
+            double radius = m_config.extruder_clearance_radius.value;
+            if (radius < 15.0) radius = 45.0; // Keep in sync with wipe_tower_clearance_valid fallback
+
             m_conflict_result.emplace(
                 "Prime Tower", 
                 objName, 
                 conflict_height, 
                 nullptr, 
-                target_po
+                target_po,
+                radius
             );
             BOOST_LOG_TRIVIAL(info) << boost::format("Set conflict_result: Prime Tower <-> %1%") % objName;
             
