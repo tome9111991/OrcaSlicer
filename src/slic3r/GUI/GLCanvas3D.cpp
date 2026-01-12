@@ -4369,8 +4369,10 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             m_main_toolbar.on_mouse(evt2, *this);
         }
 
-        if (evt.LeftUp() || evt.MiddleUp() || evt.RightUp())
+        if (evt.LeftUp() || evt.MiddleUp() || evt.RightUp()) {
+            check_and_warn_prime_tower_collision();
             mouse_up_cleanup();
+        }
 
         m_mouse.set_start_position_3D_as_invalid();
         m_mouse.position = pos.cast<double>();
@@ -4742,6 +4744,9 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             // Let the plater know that the dragging finished, so a delayed refresh
             // of the scene with the background processing data should be performed.
             post_event(SimpleEvent(EVT_GLCANVAS_MOUSE_DRAGGING_FINISHED));
+
+            // ORCA: Check for prime tower collision on drop and show warning
+            check_and_warn_prime_tower_collision();
         }
         else if (evt.LeftUp() && m_picking_enabled && m_rectangle_selection.is_dragging() && m_layers_editing.state != LayersEditing::Editing) {
             //BBS: don't use alt as de-select
@@ -11006,6 +11011,49 @@ void GLCanvas3D::GizmoHighlighter::blink()
 
     if ((++m_blink_counter) >= 11)
         invalidate();
+}
+
+void GLCanvas3D::check_and_warn_prime_tower_collision()
+{
+    // 1. Basic checks: Must be FFF technology
+    if (current_printer_technology() != ptFFF || !fff_print())
+        return;
+
+    // 2. Check if specific "No sparse layers" mode is active
+    // We only want to warn in this specific mode as requested
+    const auto& config = fff_print()->config();
+    bool is_wt_no_sparse = config.enable_prime_tower.value && config.wipe_tower_no_sparse_layers.value;
+
+    if (!is_wt_no_sparse)
+        return;
+
+    // 3. Force a fresh collision check for the current positions
+    // This updates m_sequential_print_clearance.is_collision()
+    update_sequential_clearance();
+
+    // 4. Check the result
+    if (m_sequential_print_clearance.is_collision()) {
+        
+        wxString msg = m_prime_tower_collision_text;
+        if (msg.IsEmpty()) {
+             msg = _L("The prime tower is too close to an object. Please move it to resolve the collision.");
+        }
+
+        auto notification_manager = wxGetApp().plater()->get_notification_manager();
+        if (notification_manager) {
+            notification_manager->push_notification(NotificationType::CustomNotification,
+                                                     NotificationManager::NotificationLevel::WarningNotificationLevel,
+                                                     msg.ToStdString());
+            m_prime_tower_warning_shown = true;
+        }
+    } else if (m_prime_tower_warning_shown) {
+        // Only close if we previously showed it (to avoid closing other custom notifications unnecessarily)
+        auto notification_manager = wxGetApp().plater()->get_notification_manager();
+        if (notification_manager) {
+            notification_manager->close_notification_of_type(NotificationType::CustomNotification);
+        }
+        m_prime_tower_warning_shown = false;
+    }
 }
 
 const ModelVolume *get_model_volume(const GLVolume &v, const Model &model)

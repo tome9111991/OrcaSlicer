@@ -559,6 +559,7 @@ private:
     // when true renders an extra frame by not resetting m_dirty to false
     // see request_extra_frame()
     bool m_extra_frame_requested;
+    bool m_prime_tower_warning_shown{ false };
     bool m_event_handlers_bound{ false };
 
     GLVolumeCollection m_volumes;
@@ -679,6 +680,8 @@ public:
         void set_render_fill(bool render_fill) { m_render_fill = render_fill; }
         void set_visible(bool visible) { m_visible = visible; }
         void set_collision(bool is_collision) { m_is_collision = is_collision; }
+        bool is_visible() const { return m_visible; }
+        bool is_collision() const { return m_is_collision; }
         void render();
 
         friend class GLCanvas3D;
@@ -1119,6 +1122,7 @@ public:
     void export_toolpaths_to_obj(const char* filename) const;
 
     void mouse_up_cleanup();
+    void check_and_warn_prime_tower_collision();
 
     bool are_labels_shown() const { return m_labels.is_shown(); }
     void show_labels(bool show) { m_labels.show(show); }
