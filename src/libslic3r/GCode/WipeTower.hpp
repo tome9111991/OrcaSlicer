@@ -197,7 +197,10 @@ public:
     float get_brim_width() const { return m_wipe_tower_brim_width_real; }
     BoundingBoxf get_bbx() const {
         if (m_outer_wall.empty()) return BoundingBoxf({Vec2d(0,0)});
-        BoundingBox  box = get_extents(m_outer_wall.begin()->second);
+        BoundingBox box;
+        for (auto const& [z, polylines] : m_outer_wall) {
+            box.merge(get_extents(polylines));
+        }
         BoundingBoxf res = BoundingBoxf(unscale(box.min), unscale(box.max));
         return res;
     }

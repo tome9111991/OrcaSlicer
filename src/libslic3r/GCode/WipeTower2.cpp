@@ -2062,6 +2062,8 @@ WipeTower::ToolChangeResult WipeTower2::finish_layer()
 
     // Now prepare future wipe.
     int i = poly.closest_point_index(Point::new_scale(writer.x(), writer.y()));
+    // ORCA: Capture outer wall for collision detection
+    m_outer_wall[m_layer_info->z].push_back(to_polyline(poly));
     writer.add_wipe_point(writer.pos());
     writer.add_wipe_point(unscale(poly.points[i==0 ? int(poly.points.size())-1 : i-1]).cast<float>());
 

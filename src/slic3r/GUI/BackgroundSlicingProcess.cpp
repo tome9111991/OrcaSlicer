@@ -43,7 +43,7 @@ bool SlicingProcessCompletedEvent::critical_error() const
 {
 	try {
 		this->rethrow_exception();
-	} catch (const Slic3r::SlicingError &) {
+	} catch (const Slic3r::SlicingError &ex) {
 		// Exception derived from SlicingError is non-critical.
 		return false;
     } catch (const Slic3r::SlicingErrors &) {

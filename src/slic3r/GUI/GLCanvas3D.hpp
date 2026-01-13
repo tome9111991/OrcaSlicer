@@ -239,6 +239,8 @@ class GLCanvas3D
 
         mutable float               m_adaptive_quality{ 0.5f };
         mutable HeightProfileSmoothingParams m_smooth_params;
+        //ORCA: Limit max layer height to layer height
+        mutable bool                m_limit_max_layer_height{ false };
 
         static float                s_overlay_window_width;
 
@@ -388,6 +390,7 @@ class GLCanvas3D
         FilamentUnPrintableOnFirstLayer,
         MixUsePLAAndPETG,
         PrimeTowerOutside,
+        PrimeTowerCollision,
         NozzleFilamentIncompatible,
         MixtureFilamentIncompatible,
         FlushingVolumeZero
@@ -549,9 +552,11 @@ private:
     bool m_use_clipping_planes;
     std::array<SlaCap, 2> m_sla_caps;
     std::string m_sidebar_field;
+    std::string m_prime_tower_collision_text;
     // when true renders an extra frame by not resetting m_dirty to false
     // see request_extra_frame()
     bool m_extra_frame_requested;
+    bool m_prime_tower_warning_shown{ false };
     bool m_event_handlers_bound{ false };
 
     GLVolumeCollection m_volumes;
@@ -665,6 +670,7 @@ public:
         GLModel m_perimeter;
         bool m_render_fill{ true };
         bool m_visible{ false };
+        bool m_is_collision{ false };
 
         std::vector<Pointf3s> m_hull_2d_cache;
 
@@ -673,6 +679,9 @@ public:
         void set_polygons(const Polygons& polygons, const std::vector<std::pair<Polygon, float>>& height_polygons);
         void set_render_fill(bool render_fill) { m_render_fill = render_fill; }
         void set_visible(bool visible) { m_visible = visible; }
+        void set_collision(bool is_collision) { m_is_collision = is_collision; }
+        bool is_visible() const { return m_visible; }
+        bool is_collision() const { return m_is_collision; }
         void render();
 
         friend class GLCanvas3D;
@@ -1124,6 +1133,7 @@ public:
     void export_toolpaths_to_obj(const char* filename) const { m_gcode_viewer.export_toolpaths_to_obj(filename); }
 
     void mouse_up_cleanup();
+    void check_and_warn_prime_tower_collision();
 
     bool are_labels_shown() const { return m_labels.is_shown(); }
     void show_labels(bool show) { m_labels.show(show); }
@@ -1160,12 +1170,7 @@ public:
 #endif
     }
 
-    void reset_sequential_print_clearance() {
-        m_sequential_print_clearance.set_visible(false);
-        m_sequential_print_clearance.set_render_fill(false);
-        //BBS: add the height logic
-        m_sequential_print_clearance.set_polygons(Polygons(), std::vector<std::pair<Polygon, float>>());
-    }
+    void reset_sequential_print_clearance(bool force = false);
 
     void set_sequential_print_clearance_visible(bool visible) {
         m_sequential_print_clearance.set_visible(visible);
@@ -1173,6 +1178,10 @@ public:
 
     void set_sequential_print_clearance_render_fill(bool render_fill) {
         m_sequential_print_clearance.set_render_fill(render_fill);
+    }
+
+    void set_sequential_print_clearance_collision(bool is_collision) {
+        m_sequential_print_clearance.set_collision(is_collision);
     }
 
     //BBS: add the height logic

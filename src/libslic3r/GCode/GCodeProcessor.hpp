@@ -106,8 +106,10 @@ class Print;
         const void *_obj1; // nullptr means wipe tower
         const void *_obj2;
         int                layer = -1;
-        ConflictResult(const std::string &objName1, const std::string &objName2, double height, const void *obj1, const void *obj2)
-            : _objName1(objName1), _objName2(objName2), _height(height), _obj1(obj1), _obj2(obj2)
+        // ORCA: added _radius to show required clearance in the UI
+        double             _radius = 0.0;
+        ConflictResult(const std::string &objName1, const std::string &objName2, double height, const void *obj1, const void *obj2, double radius = 0.0)
+            : _objName1(objName1), _objName2(objName2), _height(height), _obj1(obj1), _obj2(obj2), _radius(radius)
         {}
         ConflictResult() = default;
     };

@@ -1057,6 +1057,7 @@ public:
 
     //BBS
     static StringObjectException sequential_print_clearance_valid(const Print &print, Polygons *polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr);
+    static StringObjectException wipe_tower_clearance_valid(const Print& print, StringObjectException* warning = nullptr);
     ConflictResultOpt            get_conflict_result() const { return m_conflict_result; }
 
     // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
@@ -1121,6 +1122,7 @@ private:
 
     void                _make_skirt();
     void                _make_wipe_tower();
+    void                _update_wipe_tower_collision_result();
     void                finalize_first_layer_convex_hull();
 
     // Islands of objects and their supports extruded at the 1st layer.
@@ -1170,6 +1172,8 @@ private:
     //BBS
     ConflictResultOpt m_conflict_result;
     FakeWipeTower     m_fake_wipe_tower;
+    float             m_cached_wipe_tower_depth{ 0.0f };
+    bool              m_has_cached_wipe_tower{ false };
     bool              m_has_auto_filament_map_result{false};
     
     std::vector<std::set<int>> m_geometric_unprintable_filaments;

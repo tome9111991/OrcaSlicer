@@ -76,6 +76,8 @@ void Print::clear()
     m_print_regions.clear();
     m_model.clear_objects();
     m_statistics_by_extruder_count.clear();
+    m_cached_wipe_tower_depth = 0.0f;
+    m_has_cached_wipe_tower   = false;
 }
 
 bool Print::has_tpu_filament() const
@@ -587,6 +589,108 @@ std::vector<size_t> Print::layers_sorted_for_object(float start, float end, std:
 
     return idx_of_object_sorted;
 };
+
+// ORCA: New function to check Prime Tower collision with objects when 'no sparse layers' is enabled.
+// Uses accurate object hulls and handles multi-plate coordinate systems correctly by ensuring all polygons are in World space.
+StringObjectException Print::wipe_tower_clearance_valid(const Print& print, StringObjectException* warning)
+{
+    if (!print.config().enable_prime_tower || !print.config().wipe_tower_no_sparse_layers)
+        return {};
+
+    size_t plate_idx = print.get_plate_index();
+    const PrintConfig& config = print.config();
+    const Vec3d origin = print.get_plate_origin();
+
+    // Absolute World position of WT center
+    double x_pos = config.wipe_tower_x.get_at(plate_idx) + origin.x();
+    double y_pos = config.wipe_tower_y.get_at(plate_idx) + origin.y();
+
+    double radius = config.extruder_clearance_radius.value;
+    // Fallback if < 15.0mm (likely unset, invalid, or just nozzle radius instead of head radius)
+    if (radius < 15.0) {
+        radius = 45.0; // Default safe radius
+    }
+
+    // Accurate geometry if available
+    Polygon wt_hull;
+    Polygons all_wt_polys;
+    
+    // ORCA: Collect outer walls from ALL layers because 'no sparse layers' might mean the tower 
+    // doesn't exist on layer 0 or varies significantly in shape/position.
+    if (!print.m_fake_wipe_tower.outer_wall.empty()) {
+        BOOST_LOG_TRIVIAL(debug) << boost::format("wipe_tower_clearance_valid: Found %1% outer_wall layers") % print.m_fake_wipe_tower.outer_wall.size();
+        for (const auto& [z, polylines] : print.m_fake_wipe_tower.outer_wall) {
+            for (const Polyline& pl : polylines) {
+                if (pl.empty()) continue;
+                Polygon p;
+                p.points = pl.points;
+                all_wt_polys.push_back(p);
+            }
+        }
+    } else {
+        BOOST_LOG_TRIVIAL(debug) << "wipe_tower_clearance_valid: outer_wall is empty, using fallback";
+    }
+
+    bool is_fallback = false;
+    if (!all_wt_polys.empty()) {
+        // Compute convex hull of the entire tower projection
+        wt_hull = Slic3r::Geometry::convex_hull(all_wt_polys);
+        // Translate from local tower coordinates (usually around 0,0) to World position
+        wt_hull.translate(Point::new_scale(x_pos, y_pos));
+        BOOST_LOG_TRIVIAL(debug) << boost::format("wipe_tower_clearance_valid: Using actual tower geometry, hull has %1% points") % wt_hull.points.size();
+    } else {
+        is_fallback = true;
+        // Fallback estimate
+        double w = config.prime_tower_width.value;
+        double d = w;
+        if (print.m_fake_wipe_tower.depth > EPSILON) d = print.m_fake_wipe_tower.depth;
+        
+        double h_w = 0.5 * w + config.prime_tower_brim_width.value;
+        double h_d = 0.5 * d + config.prime_tower_brim_width.value;
+        
+        wt_hull.points = {
+            Point::new_scale(-h_w, -h_d), Point::new_scale(h_w, -h_d),
+            Point::new_scale(h_w, h_d),   Point::new_scale(-h_w, h_d)
+        };
+        if (std::abs(config.wipe_tower_rotation_angle.value) > EPSILON)
+            wt_hull.rotate(Geometry::deg2rad(config.wipe_tower_rotation_angle.value));
+        wt_hull.translate(Point::new_scale(x_pos, y_pos));
+    }
+
+    Polygons wt_hulls_offset = offset(wt_hull, float(scale_(radius)), jtRound, scale_(0.1));
+    BOOST_LOG_TRIVIAL(debug) << boost::format("wipe_tower_clearance_valid: Checking clearance with radius %1% mm, offset polygons: %2%") % radius % wt_hulls_offset.size();
+
+    StringObjectException result;
+
+    for (const PrintObject* print_object : print.objects()) {
+        // Check each instance using the robust Model Geometry (Convex Hull)
+        // This matches the Prepare tab logic and is always up-to-date with instance moves.
+        for (const PrintInstance& instance : print_object->instances()) {
+            // get_convex_hull_2d() returns Plate Coordinates (relative to plate origin)
+            Polygon object_hull = const_cast<PrintInstance&>(instance).get_convex_hull_2d();
+            
+            // Translate to World Space (Absolute Bed Coords) by adding plate origin
+            object_hull.translate(scale_(origin.x()), scale_(origin.y()));
+
+            Polygons intersection_result = intersection(wt_hulls_offset, {object_hull});
+            if (!intersection_result.empty()) {
+                result.object = instance.model_instance->get_object();
+                result.string = Slic3r::format(L("Prime tower is too close to object %1%. When 'No sparse layers' is enabled, the prime tower must be at least %2% mm away from all objects to prevent collision."), 
+                    instance.model_instance->get_object()->name, radius);
+                result.is_warning = true;
+                BOOST_LOG_TRIVIAL(warning) << boost::format("wipe_tower_clearance_valid: COLLISION DETECTED with object %1% (using Model Convex Hull)") % instance.model_instance->get_object()->name;
+                break;
+            }
+        }
+        if (!result.string.empty()) break;
+    }
+
+    if (result.string.empty()) {
+        BOOST_LOG_TRIVIAL(debug) << "wipe_tower_clearance_valid: No collision detected";
+    }
+
+    return result;
+}
 
 StringObjectException Print::sequential_print_clearance_valid(const Print &print, Polygons *polygons, std::vector<std::pair<Polygon, float>>* height_polygons)
 {
@@ -1221,8 +1325,7 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         }
     }
 
-    if (m_config.enable_prime_tower) {
-    } else {
+    if (!m_config.enable_prime_tower) {
         if (m_config.enable_wrapping_detection && warning!=nullptr) {
             StringObjectException warningtemp;
             warningtemp.string     = L("Prime tower is required for clumping detection; otherwise, there may be flaws on the model.");
@@ -2243,6 +2346,10 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 
     if (this->has_wipe_tower()) {
         m_fake_wipe_tower.set_pos({ m_config.wipe_tower_x.get_at(m_plate_index), m_config.wipe_tower_y.get_at(m_plate_index) });
+        // ORCA: Check wipe tower clearance. This ensures we catch collisions even if the wipe tower step was cached (e.g. only objects moved).
+        if (m_config.wipe_tower_no_sparse_layers) {
+            _update_wipe_tower_collision_result();
+        }
     }
 
     if (this->set_started(psSkirtBrim)) {
@@ -2407,9 +2514,30 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         volatile double seconds     = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count() / (double) 1000;
         BOOST_LOG_TRIVIAL(info) << "gcode path conflicts check takes " << seconds << " secs.";
 
-        m_conflict_result = conflictRes;
         if (conflictRes.has_value()) {
+            m_conflict_result = conflictRes;
             BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2%")%conflictRes.value()._objName1 %conflictRes.value()._objName2;
+        } else {
+             // ORCA: Clear conflict result if no physical collision found.
+             // But only clear if it's NOT a Prime Tower conflict (those are handled in _make_wipe_tower)
+             if (m_conflict_result.has_value()) {
+                 if (m_conflict_result.value()._objName1 == "Prime Tower") {
+                     // Don't clear Prime Tower conflicts here - they are handled in _make_wipe_tower()
+                     // after wipe_tower_clearance_valid() is called
+                     // Only clear if feature is disabled (stale warning)
+                     if (!m_config.enable_prime_tower || !m_config.wipe_tower_no_sparse_layers) {
+                         m_conflict_result = std::nullopt;
+                         BOOST_LOG_TRIVIAL(info) << "Cleared Prime Tower conflict (feature disabled)";
+                     }
+                 } else if (m_conflict_result.value()._objName1 == "WipeTower") {
+                     // WipeTower conflicts from ConflictChecker - clear if no longer found
+                     m_conflict_result = std::nullopt;
+                     BOOST_LOG_TRIVIAL(info) << "Cleared WipeTower conflict (no path intersection found in process)";
+                 } else {
+                     // Other conflicts - clear them
+                     m_conflict_result = std::nullopt;
+                 }
+             }
         }
     }
 
@@ -2948,7 +3076,8 @@ std::vector<Polygons> Print::get_extruder_printable_polygons() const
         Polygons ploys = {Polygon::new_scale(e_printable_area)};
         extruder_printable_polys.emplace_back(ploys);
     }
-    return std::move(extruder_printable_polys);
+    // ORCA: fixed pessimizing-move warning
+    return extruder_printable_polys;
 }
 
 std::vector<Polygons> Print::get_extruder_unprintable_polygons() const
@@ -2961,7 +3090,8 @@ std::vector<Polygons> Print::get_extruder_unprintable_polygons() const
         Polygons ploys = diff(printable_poly, Polygon::new_scale(e_printable_area));
         extruder_unprintable_polys.emplace_back(ploys);
     }
-    return std::move(extruder_unprintable_polys);
+    // ORCA: fixed pessimizing-move warning
+    return extruder_unprintable_polys;
 }
 
 size_t Print::get_extruder_id(unsigned int filament_id) const
@@ -3062,6 +3192,12 @@ const WipeTowerData &Print::wipe_tower_data(size_t filaments_cnt) const
             }
             const_cast<Print *>(this)->m_wipe_tower_data.depth = depth;
         }
+
+        // ORCA: Ensure visual persistence by taking the maximum of estimation and cache
+        if (m_has_cached_wipe_tower) {
+            const_cast<Print*>(this)->m_wipe_tower_data.depth = std::max(m_wipe_tower_data.depth, m_cached_wipe_tower_depth);
+        }
+
         const_cast<Print *>(this)->m_wipe_tower_data.brim_width = m_config.prime_tower_brim_width;
         }
         if (m_config.prime_tower_brim_width < 0) const_cast<Print *>(this)->m_wipe_tower_data.brim_width = WipeTower::get_auto_brim_by_height(max_height);
@@ -3338,6 +3474,10 @@ void Print::_make_wipe_tower()
         m_wipe_tower_data.bbx               = wipe_tower.get_bbx();
         m_wipe_tower_data.rib_offset        = wipe_tower.get_rib_offset();
 
+        // ORCA: Cache the actual depth for visualization persistence
+        m_cached_wipe_tower_depth = m_wipe_tower_data.depth;
+        m_has_cached_wipe_tower   = true;
+
         // Unload the current filament over the purge tower.
         coordf_t layer_height = m_objects.front()->config().layer_height.value;
         if (m_wipe_tower_data.tool_ordering.back().wipe_tower_partitions > 0) {
@@ -3365,6 +3505,73 @@ void Print::_make_wipe_tower()
                                                   m_wipe_tower_data.z_and_depth_pairs, m_wipe_tower_data.brim_width,
                                                   config().wipe_tower_rotation_angle, config().wipe_tower_cone_angle,
                                                   {scale_(origin.x()), scale_(origin.y())});
+        // ORCA: Set outer_wall for precise collision checking
+        m_fake_wipe_tower.outer_wall = wipe_tower.get_outer_wall();
+    }
+
+    // ORCA: Check collision after generating wipe tower to ensure safety
+    _update_wipe_tower_collision_result();
+}
+
+void Print::_update_wipe_tower_collision_result()
+{
+    // ORCA: Check collision again after generating wipe tower to ensure safety
+    // This check uses extruder clearance radius, not just path intersections
+    if (m_config.wipe_tower_no_sparse_layers) {
+        // First check clearance using our robust check (Convex Hull based)
+        auto ret = wipe_tower_clearance_valid(*this);
+        
+        if (!ret.string.empty()) {
+            BOOST_LOG_TRIVIAL(warning) << "Wipe tower collision detected: " << ret.string;
+
+            std::string objName = "Object";
+            const PrintObject* target_po = nullptr;
+
+            if (ret.object) {
+                for (const PrintObject* po : m_objects) {
+                    if (po->model_object() == ret.object) {
+                        target_po = po;
+                        break;
+                    }
+                }
+                auto mo = dynamic_cast<const ModelObject*>(ret.object);
+                if (mo) objName = mo->name;
+            }
+
+            // Set m_conflict_result for G-code viewer integration
+            double conflict_height = m_config.initial_layer_print_height.value;
+            // ORCA: Pass radius to show it in the UI warning
+            double radius = m_config.extruder_clearance_radius.value;
+            if (radius < 15.0) radius = 45.0; // Keep in sync with wipe_tower_clearance_valid fallback
+
+            m_conflict_result.emplace(
+                "Prime Tower", 
+                objName, 
+                conflict_height, 
+                nullptr, 
+                target_po,
+                radius
+            );
+            BOOST_LOG_TRIVIAL(info) << boost::format("Set conflict_result: Prime Tower <-> %1%") % objName;
+            
+        } else {
+             // No clearance violation found.
+             // ORCA CHANGE: We explicitly SKIP the ConflictChecker for WipeTower here.
+             // Since 'wipe_tower_clearance_valid' now uses the robust Convex Hull (Prepare tab geometry),
+             // if it says there is enough space, we trust it.
+             // Running ConflictChecker here often produces false positives ("Serious warning") due to 
+             // complex path interpretations or Brim interactions, which confuses the user.
+             // BOOST_LOG_TRIVIAL(info) << "Wipe tower clearance OK. Skipping ConflictChecker to avoid false positives.";
+
+             // Clear any stale conflict result
+             if (m_conflict_result.has_value()) {
+                 std::string conflict_type = m_conflict_result.value()._objName1;
+                 if (conflict_type == "Prime Tower" || conflict_type == "WipeTower") {
+                     m_conflict_result = std::nullopt;
+                     BOOST_LOG_TRIVIAL(info) << "Cleared Prime Tower/WipeTower conflict";
+                 }
+             }
+        }
     }
 }
 
