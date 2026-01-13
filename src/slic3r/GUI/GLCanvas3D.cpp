@@ -2982,6 +2982,15 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 int nozzle_nums = wxGetApp().preset_bundle->get_printer_extruder_count();
                 Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(print_cfg, w, v, nozzle_nums, 0, false, dynamic_cast<const ConfigOptionBool*>(dconfig.option("enable_wrapping_detection"))->value);
 
+                // ORCA: Ensure visual persistence by using the cached wipe tower depth if it's larger than the estimate.
+                // This prevents the tower from appearing to shrink in the Prepare tab when objects are moved (invalidating slicing).
+                if (current_print) {
+                    float cached_depth = current_print->wipe_tower_data(filaments_count).depth;
+                    if (cached_depth > wipe_tower_size(1)) {
+                        wipe_tower_size(1) = cached_depth;
+                    }
+                }
+
                 {
                     const float                 margin     = WIPE_TOWER_MARGIN + brim_width;
                     BoundingBoxf3               plate_bbox = part_plate->get_bounding_box();
@@ -5649,51 +5658,14 @@ void GLCanvas3D::update_sequential_clearance()
             return; // No wipe tower found in scene
 
         // Get the hull/bounding box from the volume
+        // ORCA: Since Print::wipe_tower_data() now persists depth, this BB is already correct
+        // even if the slicing step is invalidated.
         BoundingBoxf3 wt_bb = wt_volume->transformed_bounding_box();
         
         double x_min = wt_bb.min.x();
         double x_max = wt_bb.max.x();
         double y_min = wt_bb.min.y();
         double y_max = wt_bb.max.y();
-
-        // ORCA: If no sparse layers is enabled and we haven't sliced yet, 
-        // the volume is just a small dummy. We need to estimate its real potential size.
-        if (fff_print()->config().wipe_tower_no_sparse_layers && !fff_print()->is_step_done(psWipeTower)) {
-            double w = fff_print()->config().prime_tower_width;
-            double d = w; // Default
-
-            const std::vector<double>& matrix = fff_print()->config().flush_volumes_matrix.values;
-            double max_flush_vol = 0.0;
-            if (!matrix.empty()) {
-                max_flush_vol = *std::max_element(matrix.begin(), matrix.end());
-            }
-
-            double multiplier = 1.0;
-            if (!fff_print()->config().flush_multiplier.values.empty()) {
-                multiplier = fff_print()->config().flush_multiplier.values[0];
-            }
-            max_flush_vol *= multiplier;
-
-            double layer_height = 0.2; // Default fallback
-            if (!fff_print()->objects().empty()) {
-                layer_height = fff_print()->objects().front()->config().layer_height.value;
-            }
-
-            if (layer_height > EPSILON && w > EPSILON) {
-                double depth_per_flush = max_flush_vol / (layer_height * w);
-                size_t n_filaments = fff_print()->extruders().size();
-                double safety_factor = (n_filaments > 2) ? 2.5 : 1.2;
-                double estimated_max_depth = depth_per_flush * safety_factor + 2.0;
-
-                if (estimated_max_depth > d) {
-                    // Expand the bounding box in Y direction (wipe tower grows in Y)
-                    // The tower center is at (x_pos, y_pos), so we expand from the center
-                    double y_center = 0.5 * (y_min + y_max);
-                    y_min = y_center - 0.5 * estimated_max_depth;
-                    y_max = y_center + 0.5 * estimated_max_depth;
-                }
-            }
-        }
 
         Point p1 = Point::new_scale(x_min, y_min);
         Point p2 = Point::new_scale(x_max, y_min);

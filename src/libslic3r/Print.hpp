@@ -1172,6 +1172,8 @@ private:
     //BBS
     ConflictResultOpt m_conflict_result;
     FakeWipeTower     m_fake_wipe_tower;
+    float             m_cached_wipe_tower_depth{ 0.0f };
+    bool              m_has_cached_wipe_tower{ false };
     bool              m_has_auto_filament_map_result{false};
     
     std::vector<std::set<int>> m_geometric_unprintable_filaments;

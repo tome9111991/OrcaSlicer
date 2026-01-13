@@ -76,6 +76,8 @@ void Print::clear()
     m_print_regions.clear();
     m_model.clear_objects();
     m_statistics_by_extruder_count.clear();
+    m_cached_wipe_tower_depth = 0.0f;
+    m_has_cached_wipe_tower   = false;
 }
 
 bool Print::has_tpu_filament() const
@@ -3188,6 +3190,12 @@ const WipeTowerData &Print::wipe_tower_data(size_t filaments_cnt) const
             }
             const_cast<Print *>(this)->m_wipe_tower_data.depth = depth;
         }
+
+        // ORCA: Ensure visual persistence by taking the maximum of estimation and cache
+        if (m_has_cached_wipe_tower) {
+            const_cast<Print*>(this)->m_wipe_tower_data.depth = std::max(m_wipe_tower_data.depth, m_cached_wipe_tower_depth);
+        }
+
         const_cast<Print *>(this)->m_wipe_tower_data.brim_width = m_config.prime_tower_brim_width;
         }
         if (m_config.prime_tower_brim_width < 0) const_cast<Print *>(this)->m_wipe_tower_data.brim_width = WipeTower::get_auto_brim_by_height(max_height);
@@ -3463,6 +3471,10 @@ void Print::_make_wipe_tower()
         m_wipe_tower_data.height            = wipe_tower.get_wipe_tower_height();
         m_wipe_tower_data.bbx               = wipe_tower.get_bbx();
         m_wipe_tower_data.rib_offset        = wipe_tower.get_rib_offset();
+
+        // ORCA: Cache the actual depth for visualization persistence
+        m_cached_wipe_tower_depth = m_wipe_tower_data.depth;
+        m_has_cached_wipe_tower   = true;
 
         // Unload the current filament over the purge tower.
         coordf_t layer_height = m_objects.front()->config().layer_height.value;
