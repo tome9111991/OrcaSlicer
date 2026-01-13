@@ -11013,6 +11013,24 @@ void GLCanvas3D::GizmoHighlighter::blink()
         invalidate();
 }
 
+void GLCanvas3D::reset_sequential_print_clearance(bool force)
+{
+    // ORCA: Check for persistent collision visualization
+    if (!force && m_sequential_print_clearance.is_collision()) {
+        if (current_printer_technology() == ptFFF && fff_print()) {
+            const auto& config = fff_print()->config();
+            if (config.enable_prime_tower.value && config.wipe_tower_no_sparse_layers.value) {
+                return; // PRESERVE
+            }
+        }
+    }
+
+    m_sequential_print_clearance.set_visible(false);
+    m_sequential_print_clearance.set_render_fill(false);
+    //BBS: add the height logic
+    m_sequential_print_clearance.set_polygons(Polygons(), std::vector<std::pair<Polygon, float>>());
+}
+
 void GLCanvas3D::check_and_warn_prime_tower_collision()
 {
     // 1. Basic checks: Must be FFF technology
@@ -11046,13 +11064,18 @@ void GLCanvas3D::check_and_warn_prime_tower_collision()
                                                      msg.ToStdString());
             m_prime_tower_warning_shown = true;
         }
-    } else if (m_prime_tower_warning_shown) {
-        // Only close if we previously showed it (to avoid closing other custom notifications unnecessarily)
-        auto notification_manager = wxGetApp().plater()->get_notification_manager();
-        if (notification_manager) {
-            notification_manager->close_notification_of_type(NotificationType::CustomNotification);
+    } else {
+        // ORCA: Hide clearance visualization if no collision
+        reset_sequential_print_clearance();
+
+        if (m_prime_tower_warning_shown) {
+            // Only close if we previously showed it (to avoid closing other custom notifications unnecessarily)
+            auto notification_manager = wxGetApp().plater()->get_notification_manager();
+            if (notification_manager) {
+                notification_manager->close_notification_of_type(NotificationType::CustomNotification);
+            }
+            m_prime_tower_warning_shown = false;
         }
-        m_prime_tower_warning_shown = false;
     }
 }
 

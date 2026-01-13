@@ -1159,12 +1159,7 @@ public:
 #endif
     }
 
-    void reset_sequential_print_clearance() {
-        m_sequential_print_clearance.set_visible(false);
-        m_sequential_print_clearance.set_render_fill(false);
-        //BBS: add the height logic
-        m_sequential_print_clearance.set_polygons(Polygons(), std::vector<std::pair<Polygon, float>>());
-    }
+    void reset_sequential_print_clearance(bool force = false);
 
     void set_sequential_print_clearance_visible(bool visible) {
         m_sequential_print_clearance.set_visible(visible);
