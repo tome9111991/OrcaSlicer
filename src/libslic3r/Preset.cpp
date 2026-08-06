@@ -1373,7 +1373,7 @@ static std::vector<std::string> s_Preset_filament_options {/*"filament_colour", 
     "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow", "activate_chamber_temp_control", "chamber_minimal_temperature",
     "filament_long_retractions_when_cut","filament_retraction_distances_when_cut", "idle_temperature",
     //BBS filament change length while the extruder color
-    "filament_change_length","filament_flush_volumetric_speed","filament_flush_temp","filament_flush_temp_fast", "filament_cooling_before_tower",
+    "filament_change_length","filament_flush_volumetric_speed","filament_flush_multiplier","filament_flush_temp","filament_flush_temp_fast", "filament_cooling_before_tower",
     // Multi-nozzle pre-cooling / ramming / nozzle-change (nc) filament overrides
     "filament_ramming_volumetric_speed", "filament_ramming_volumetric_speed_nc",
     "filament_ramming_travel_time", "filament_ramming_travel_time_nc",

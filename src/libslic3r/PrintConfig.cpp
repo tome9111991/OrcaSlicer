@@ -2910,6 +2910,14 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L(u8"mm³/s");	// cubic millimeters per second, CIS languages need translation
     def->set_default_value(new ConfigOptionFloatsNullable{ 0 });
 
+    def = this->add("filament_flush_multiplier", coFloats);
+    def->label = L("Filament flush multiplier");
+    def->tooltip = L("Multiplier applied to flushing volumes when changing away from this filament. 1.0 keeps the calculated volume; higher values purge more material.");
+    def->mode = comAdvanced;
+    def->min = 0.1;
+    def->max = 10;
+    def->set_default_value(new ConfigOptionFloats{ 1.0 });
+
     def = this->add("filament_max_volumetric_speed", coFloats);
     def->label = L("Max volumetric speed");
     def->tooltip = L("This setting is the volume of filament that can be melted and extruded per second. Printing speed is limited by max volumetric speed, in case of too high and unreasonable speed setting. This value cannot be zero.");

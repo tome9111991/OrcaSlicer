@@ -1533,6 +1533,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInts,                physical_extruder_map))
     ((ConfigOptionIntsNullable,        nozzle_flush_dataset))
     ((ConfigOptionFloatsNullable,      filament_flush_volumetric_speed))
+    ((ConfigOptionFloats,              filament_flush_multiplier))
     ((ConfigOptionIntsNullable,        filament_flush_temp))
     // Fast-purge flush temperature; consumed only when prime_volume_mode==pvmFast.
     ((ConfigOptionIntsNullable,        filament_flush_temp_fast))

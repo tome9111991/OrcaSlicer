@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <wx/display.h>
 #include <wx/sizer.h>
 #include "libslic3r/FlushVolCalc.hpp"
@@ -525,6 +526,10 @@ WipingDialog::VolumeMatrix WipingDialog::CalcFlushingVolumes(int extruder_id)
     auto& ams_multi_color_filament = preset_bundle->ams_multi_color_filment;
 
     std::vector<std::string> filament_color_strs = full_config.option<ConfigOptionStrings>("filament_colour")->values;
+    std::vector<double> filament_flush_multipliers(filament_color_strs.size(), 1.0);
+    if (const auto* multiplier = full_config.option<ConfigOptionFloats>("filament_flush_multiplier"))
+        filament_flush_multipliers = multiplier->values;
+    filament_flush_multipliers.resize(filament_color_strs.size(), 1.0);
     std::vector<std::vector<wxColour>> multi_colors;
     std::vector<wxColour> filament_colors;
     for (auto color_str : filament_color_strs)
@@ -580,7 +585,7 @@ WipingDialog::VolumeMatrix WipingDialog::CalcFlushingVolumes(int extruder_id)
                     flushing_volume = std::max(Slic3r::g_min_flush_volume_from_support, flushing_volume);
                 }
             }
-            matrix.back().emplace_back(flushing_volume);
+            matrix.back().emplace_back(std::round(flushing_volume * filament_flush_multipliers[from_idx]));
         }
     }
     return matrix;
